@@ -1,0 +1,83 @@
+apiVersion: apisix.apache.org/v2
+kind: ApisixRoute
+metadata:
+  name: httpbin-zero-trust-route
+  namespace: demo-apps
+  labels:
+    app.kubernetes.io/name: apisix-route
+    app.kubernetes.io/part-of: zero-trust-gateway
+spec:
+  http:
+    - name: httpbin-protected
+      match:
+        hosts:
+          - "api.zerotrust.local"
+          - "localhost"
+          - "127.0.0.1"
+        paths:
+          - "/httpbin/*"
+          - "/headers"
+          - "/ip"
+          - "/get"
+      # Attach reusable enterprise rate-limiting & CORS policy
+      plugin_config_name: zero-trust-security-policy
+      plugin_config_namespace: ingress-apisix
+      plugins:
+        # Strip /httpbin prefix before sending to upstream microservice
+        - name: proxy-rewrite
+          enable: true
+          config:
+            regex_uri:
+              - "^/httpbin/(.*)"
+              - "/$1"
+        # Zero-Trust OIDC Identity Enforcement via Keycloak
+        - name: openid-connect
+          enable: true
+          config:
+            client_id: "apisix-client"
+            client_secret: "apisix-oidc-client-super-secret-2026"
+            discovery: "http://keycloak.keycloak.svc.cluster.local:8080/realms/zero-trust/.well-known/openid-configuration"
+            introspection_endpoint: "http://keycloak.keycloak.svc.cluster.local:8080/realms/zero-trust/protocol/openid-connect/token/introspect"
+            token_endpoint: "http://keycloak.keycloak.svc.cluster.local:8080/realms/zero-trust/protocol/openid-connect/token"
+            bearer_only: true               # Strict Zero-Trust mode: reject missing/invalid bearer tokens with 401
+            realm: "zero-trust"
+            scope: "openid profile email roles"
+            set_userinfo_header: true       # Injects X-Userinfo JSON header to upstream
+            set_access_token_header: true   # Injects X-Access-Token header
+            set_id_token_header: true       # Injects X-Id-Token header
+            ssl_verify: false               # In-cluster communication does not require external TLS validation
+            timeout: 10
+      upstreams:
+        - name: httpbin
+          port: 80
+---
+apiVersion: apisix.apache.org/v2
+kind: ApisixRoute
+metadata:
+  name: keycloak-ingress-route
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: apisix-route
+    app.kubernetes.io/part-of: zero-trust-gateway
+spec:
+  http:
+    - name: keycloak-public-endpoints
+      match:
+        hosts:
+          - "auth.zerotrust.local"
+          - "localhost"
+          - "127.0.0.1"
+        paths:
+          - "/realms/*"
+          - "/resources/*"
+          - "/js/*"
+      plugins:
+        - name: cors
+          enable: true
+          config:
+            allow_origins: "*"
+            allow_methods: "GET,POST,OPTIONS"
+            allow_headers: "*"
+      upstreams:
+        - name: keycloak
+          port: 8080

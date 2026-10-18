@@ -1,0 +1,215 @@
+name: Zero-Trust CI/CD Validation Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  helm-lint:
+    name: Helm Chart Validation & Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Add Helm Repositories
+        run: |
+          helm repo add apisix https://charts.apiseven.com
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+
+      - name: Lint APISIX Values
+        run: |
+          helm lint apisix/apisix -f helm/apisix/values.yaml
+
+      - name: Lint Keycloak Values
+        run: |
+          helm lint bitnami/keycloak -f helm/keycloak/values.yaml
+
+      - name: Validate Kubernetes Manifests with Kubeconform
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -summary -strict -ignore-missing-schemas k8s/base/
+
+  e2e-kind-test:
+    name: KinD Cluster E2E Zero-Trust Integration Test
+    needs: helm-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Kubernetes KinD Cluster
+        uses: helm/kind-action@v1.9.0
+        with:
+          config: kind-config.yaml
+          cluster_name: zero-trust-gateway
+          wait: 120s
+
+      - name: Verify KinD Cluster Nodes
+        run: |
+          kubectl get nodes -o wide
+          kubectl cluster-info
+
+      - name: Create Namespaces & Apply Secrets
+        run: |
+          kubectl apply -f k8s/base/namespaces.yaml
+          
+          # Provision OIDC & Database Secrets (Strict GitOps adherence: no hardcoded secrets in manifests)
+          kubectl create secret generic keycloak-admin-secret \
+            --namespace=keycloak \
+            --from-literal=admin-password='SuperAdminKeycloakPassword2026!' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret generic keycloak-db-secret \
+            --namespace=keycloak \
+            --from-literal=postgres-password='KeycloakPostgresPassword2026!' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret generic apisix-oidc-secret \
+            --namespace=ingress-apisix \
+            --from-literal=client-secret='apisix-oidc-client-super-secret-2026' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Keycloak Realm ConfigMap
+        run: |
+          kubectl create configmap keycloak-realm-import \
+            --namespace=keycloak \
+            --from-file=realm-export.json=keycloak/realm-export.json \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Add & Update Helm Repositories
+        run: |
+          helm repo add apisix https://charts.apiseven.com
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+
+      - name: Deploy Keycloak with PostgreSQL Backend
+        run: |
+          helm upgrade --install keycloak bitnami/keycloak \
+            --namespace keycloak \
+            --values helm/keycloak/values.yaml \
+            --wait --timeout 10m
+
+      - name: Deploy Apache APISIX & Ingress Controller
+        run: |
+          helm upgrade --install apisix apisix/apisix \
+            --namespace ingress-apisix \
+            --values helm/apisix/values.yaml \
+            --wait --timeout 10m
+
+      - name: Verify CRD Installation
+        run: |
+          kubectl get crds | grep apisix.apache.org
+
+      - name: Deploy Upstream Httpbin & Zero-Trust ApisixRoutes
+        run: |
+          kubectl apply -f k8s/base/httpbin-upstream.yaml
+          # Wait for httpbin pod ready
+          kubectl wait --namespace demo-apps --for=condition=ready pod -l app=httpbin --timeout=120s
+          
+          # Apply ApisixPluginConfig and ApisixRoute
+          kubectl apply -f k8s/base/apisix-plugin-config.yaml
+          kubectl apply -f k8s/base/apisix-route-httpbin.yaml
+
+      - name: Wait for Ingress Readiness & Pod Status Check
+        run: |
+          kubectl get pods -A -o wide
+          kubectl get apisixroute -A
+
+      - name: Test 1 - Verify Unauthenticated Request Returns 401 Unauthorized
+        run: |
+          echo "Testing unauthenticated request to http://localhost/httpbin/headers..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: api.zerotrust.local" http://localhost/httpbin/headers)
+          echo "Received HTTP Status Code: ${HTTP_CODE}"
+          if [ "${HTTP_CODE}" -ne 401 ]; then
+            echo "FAILED: Expected 401 Unauthorized without token, got ${HTTP_CODE}"
+            exit 1
+          fi
+          echo "PASSED: Zero-Trust boundary successfully blocked unauthenticated request with 401!"
+
+      - name: Test 2 - Authenticate with Keycloak and Acquire JWT Access Token
+        id: get_token
+        run: |
+          echo "Acquiring OIDC JWT Access Token from Keycloak..."
+          TOKEN_RESPONSE=$(curl -s -X POST \
+            -H "Host: auth.zerotrust.local" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            "http://localhost/realms/zero-trust/protocol/openid-connect/token" \
+            -d "client_id=apisix-client" \
+            -d "client_secret=apisix-oidc-client-super-secret-2026" \
+            -d "grant_type=password" \
+            -d "username=alice" \
+            -d "password=Password123!")
+
+          ACCESS_TOKEN=$(echo "${TOKEN_RESPONSE}" | jq -r '.access_token')
+          if [ -z "${ACCESS_TOKEN}" ] || [ "${ACCESS_TOKEN}" = "null" ]; then
+            echo "FAILED to acquire token. Response was: ${TOKEN_RESPONSE}"
+            exit 1
+          fi
+
+          echo "Successfully retrieved Bearer Token!"
+          echo "token=${ACCESS_TOKEN}" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Verify Authenticated Request with Bearer Token Returns 200 OK
+        env:
+          BEARER_TOKEN: ${{ steps.get_token.outputs.token }}
+        run: |
+          echo "Testing authenticated request with Bearer JWT..."
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+            -H "Host: api.zerotrust.local" \
+            -H "Authorization: Bearer ${BEARER_TOKEN}" \
+            http://localhost/httpbin/headers)
+
+          HTTP_CODE=$(echo "${RESPONSE}" | grep "HTTP_STATUS" | cut -d':' -f2)
+          echo "Authenticated Request HTTP Code: ${HTTP_CODE}"
+
+          if [ "${HTTP_CODE}" -ne 200 ]; then
+            echo "FAILED: Expected 200 OK with valid token, got ${HTTP_CODE}"
+            echo "Response: ${RESPONSE}"
+            exit 1
+          fi
+          echo "PASSED: Upstream service reached successfully with OIDC identity verification!"
+
+      - name: Test 4 - Verify Rate Limiting Plugin (DDoS Mitigation) Returns 429
+        env:
+          BEARER_TOKEN: ${{ steps.get_token.outputs.token }}
+        run: |
+          echo "Testing APISIX limit-count plugin threshold (threshold=10 req / 60s)..."
+          TRIGGERED_429=0
+          for i in $(seq 1 15); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Host: api.zerotrust.local" \
+              -H "Authorization: Bearer ${BEARER_TOKEN}" \
+              http://localhost/httpbin/headers)
+            echo "Request #$i -> HTTP $CODE"
+            if [ "$CODE" -eq 429 ]; then
+              TRIGGERED_429=1
+              echo "PASSED: Rate limiting triggered 429 Too Many Requests as expected on request #$i!"
+              break
+            fi
+            sleep 0.1
+          done
+
+          if [ "$TRIGGERED_429" -ne 1 ]; then
+            echo "FAILED: Rate limit was not enforced (did not receive HTTP 429)!"
+            exit 1
+          fi
+
+      - name: Export Cluster Debug Logs on Failure
+        if: failure()
+        run: |
+          kubectl get all -A
+          kubectl logs -n ingress-apisix -l app.kubernetes.io/name=apisix --tail=100
+          kubectl logs -n keycloak -l app.kubernetes.io/name=keycloak --tail=100

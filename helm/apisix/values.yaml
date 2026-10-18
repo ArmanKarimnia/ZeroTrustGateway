@@ -1,0 +1,116 @@
+# Apache APISIX Production-Grade Helm Values Override
+# Chart: apisix/apisix (https://charts.apiseven.com)
+
+global:
+  imagePullSecrets: []
+
+# Apache APISIX Data-Plane Configuration
+apisix:
+  enabled: true
+  image:
+    repository: apache/apisix
+    tag: "3.9.1-debian"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  # Enable required plugins for Zero-Trust and Security Hardening
+  plugins:
+    - openid-connect
+    - limit-count
+    - limit-req
+    - limit-conn
+    - cors
+    - key-auth
+    - jwt-auth
+    - proxy-rewrite
+    - response-rewrite
+    - prometheus
+    - ip-restriction
+
+  # Security & Zero-Trust Core Settings
+  extraEnvVars:
+    - name: APISIX_STANDALONE
+      value: "false"
+
+  # Proxy Service (Data Plane)
+  service:
+    type: NodePort
+    http:
+      enabled: true
+      port: 9080
+      containerPort: 9080
+      nodePort: 80
+    tls:
+      enabled: true
+      servicePort: 9443
+      containerPort: 9443
+      nodePort: 443
+
+  # High Availability & Resource Allocation
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "1024Mi"
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+
+  # Enterprise Graceful Shutdown and Health Probes
+  livenessProbe:
+    httpGet:
+      path: /apisix/status
+      port: 9090
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /apisix/status
+      port: 9090
+    initialDelaySeconds: 10
+    periodSeconds: 5
+
+# Apache APISIX Ingress Controller Configuration
+ingress-controller:
+  enabled: true
+  image:
+    repository: apache/apisix-ingress-controller
+    tag: "1.8.1"
+    pullPolicy: IfNotPresent
+
+  config:
+    logLevel: "info"
+    # CRD version watching
+    kubernetes:
+      kubeconfig: ""
+      resyncInterval: "60s"
+      appNamespaces:
+        - "*" # Watch all namespaces for ApisixRoute CRDs
+      apisixRouteVersion: "apisix.apache.org/v2"
+      watchEndpointSlices: true
+    apisix:
+      serviceNamespace: "ingress-apisix"
+      serviceName: "apisix-admin"
+      servicePort: 9180
+      # Use internal APISIX Admin API key stored in secret
+      adminKeyExistingSecret: "apisix-admin-secret"
+      adminKeyExistingSecretKey: "admin-key"
+
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+# Internal etcd Configuration for APISIX State Coordination
+etcd:
+  enabled: true
+  replicaCount: 1 # For KinD/dev, scale to 3 with anti-affinity in production
+  persistence:
+    enabled: true
+    size: 2Gi
+  auth:
+    rbac:
+      create: false

@@ -1,0 +1,126 @@
+{
+  "realm": "zero-trust",
+  "enabled": true,
+  "displayName": "Zero-Trust Enterprise Realm",
+  "displayNameHtml": "<b>Zero-Trust</b> Enterprise Architecture",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 5,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "roles": {
+    "realm": [
+      {
+        "name": "api-consumer",
+        "description": "Standard API consumer with verified OIDC identity"
+      },
+      {
+        "name": "api-admin",
+        "description": "Administrative access to critical upstream microservices"
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "DevOps-Engineers",
+      "path": "/DevOps-Engineers",
+      "realmRoles": [
+        "api-consumer",
+        "api-admin"
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "apisix-client",
+      "name": "Apache APISIX Zero-Trust Gateway Client",
+      "description": "Confidential OIDC client registered for APISIX Ingress openid-connect plugin",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "apisix-oidc-client-super-secret-2026",
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300",
+        "client.secret.creation.time": "1710000000",
+        "use.refresh.tokens": "true",
+        "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true"
+      },
+      "redirectUris": [
+        "http://api.zerotrust.local/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "profile",
+        "roles",
+        "email"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@zerotrust.example.com",
+      "firstName": "Alice",
+      "lastName": "Engineer",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Password123!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "api-consumer",
+        "api-admin"
+      ],
+      "groups": [
+        "/DevOps-Engineers"
+      ]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@zerotrust.example.com",
+      "firstName": "Bob",
+      "lastName": "Operator",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Password123!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "api-consumer"
+      ]
+    }
+  ]
+}

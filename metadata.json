@@ -1,0 +1,6 @@
+{
+  "name": "Zero-Trust API Gateway with Apache APISIX & Keycloak",
+  "description": "Production-grade Zero-Trust API Gateway architecture on Kubernetes featuring Apache APISIX Ingress, Keycloak OIDC authentication, DDoS rate limiting, and automated KinD CI/CD pipelines.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

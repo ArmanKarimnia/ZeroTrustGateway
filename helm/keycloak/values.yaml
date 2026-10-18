@@ -1,0 +1,75 @@
+# Production Keycloak Helm Values Override with PostgreSQL Backend
+# Chart: bitnami/keycloak (https://charts.bitnami.com/bitnami)
+
+# Global settings
+global:
+  imageRegistry: docker.io
+
+# Keycloak Core Configuration
+auth:
+  adminUser: "admin"
+  existingSecret: "keycloak-admin-secret"
+  passwordSecretKey: "admin-password"
+
+# Production Reverse Proxy & TLS Configuration
+proxyHeaders: "xforwarded"
+httpRelativePath: "/"
+
+# Keycloak Command Extra Flags (Auto-import realm on boot)
+extraStartupArgs: "--import-realm"
+
+# Mount Keycloak Realm Export ConfigMap
+extraDeploy: []
+extraVolumes:
+  - name: realm-config
+    configMap:
+      name: keycloak-realm-import
+      items:
+        - key: realm-export.json
+          path: realm-export.json
+
+extraVolumeMounts:
+  - name: realm-config
+    mountPath: /opt/bitnami/keycloak/data/import
+    readOnly: true
+
+# Service Configuration
+service:
+  type: ClusterIP
+  ports:
+    http: 8080
+
+# Ingress Configuration (Routing through APISIX or Ingress)
+ingress:
+  enabled: false # Routed via ApisixRoute in k8s/base/apisix-route-httpbin.yaml
+
+# Resource Governance
+resources:
+  limits:
+    cpu: "1000m"
+    memory: "1536Mi"
+  requests:
+    cpu: "300m"
+    memory: "512Mi"
+
+# PostgreSQL Persistent Database Backend
+postgresql:
+  enabled: true
+  auth:
+    username: "keycloak"
+    database: "keycloak"
+    existingSecret: "keycloak-db-secret"
+    secretKeys:
+      userPasswordKey: "postgres-password"
+      adminPasswordKey: "postgres-password"
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+      requests:
+        cpu: "150m"
+        memory: "256Mi"

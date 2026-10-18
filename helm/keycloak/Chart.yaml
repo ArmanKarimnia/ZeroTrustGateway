@@ -1,0 +1,10 @@
+apiVersion: v2
+name: zero-trust-keycloak
+description: Keycloak Identity Provider with PostgreSQL backend for Zero-Trust Gateway
+type: application
+version: 1.0.0
+appVersion: "24.0.5"
+dependencies:
+  - name: keycloak
+    version: "21.6.0"
+    repository: "https://charts.bitnami.com/bitnami"
